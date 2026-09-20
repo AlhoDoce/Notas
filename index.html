@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Notas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<noscript>Este aplicativo precisa de JavaScript para funcionar.</noscript>
+
+<div class="app" id="app" data-pane="list">
+
+  <!-- ===================== SIDEBAR ===================== -->
+  <aside class="sidebar" aria-label="Lista de notas">
+    <header class="side-head">
+      <div class="brand-row">
+        <div>
+          <h1 class="brand">Notas</h1>
+          <p class="count" id="count" aria-live="polite"></p>
+        </div>
+        <div class="head-actions">
+          <button class="icon-btn" id="lockBtn" type="button" hidden aria-label="Bloquear notas agora" title="Bloquear agora">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+          </button>
+          <button class="icon-btn theme-btn" id="themeBtn" type="button" aria-label="Alternar tema claro e escuro" title="Alternar tema">
+            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z"/></svg>
+            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+          </button>
+          <button class="icon-btn" id="settingsBtn" type="button" aria-label="Configurações" title="Configurações">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="primary-actions">
+        <button class="btn btn-primary" id="newBtn" type="button" title="Nova nota (Alt + N)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          Nova nota
+        </button>
+        <button class="btn" id="dashBtn" type="button" title="Ver resumo">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          Resumo
+        </button>
+      </div>
+
+      <div class="search" id="searchBox" data-filled="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg>
+        <input id="searchInput" type="search" placeholder="Buscar notas ou #tags" aria-label="Buscar nas notas" autocomplete="off">
+        <button class="clear" id="clearSearch" type="button" aria-label="Limpar busca">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <div class="chips" id="scopeChips" role="group" aria-label="Exibir">
+        <button class="chip" type="button" data-scope="all" aria-pressed="true">Todas</button>
+        <button class="chip" type="button" data-scope="favorites" aria-pressed="false">Favoritas</button>
+        <button class="chip" type="button" data-scope="trash" aria-pressed="false">Lixeira <span class="chip-count" id="trashCount"></span></button>
+      </div>
+
+      <details class="filters" id="filters">
+        <summary>
+          <span>Filtros e ordenação</span>
+          <span class="badge-count" id="filterBadge" hidden></span>
+        </summary>
+        <div class="filters-body">
+          <label class="select-wrap">
+            <span class="sr-only">Ordenar por</span>
+            <select id="sortSelect">
+              <option value="recent">Mais recentes</option>
+              <option value="oldest">Mais antigas</option>
+              <option value="title-asc">Título A–Z</option>
+              <option value="title-desc">Título Z–A</option>
+              <option value="favorites">Favoritas primeiro</option>
+              <option value="pinned">Fixadas primeiro</option>
+            </select>
+          </label>
+          <label class="select-wrap">
+            <span class="sr-only">Filtrar por categoria</span>
+            <select id="categoryFilter"></select>
+          </label>
+          <div class="chips tag-chips" id="tagChips" role="group" aria-label="Filtrar por tag" hidden></div>
+          <button class="link-btn" id="clearFilters" type="button" hidden>Limpar busca e filtros</button>
+        </div>
+      </details>
+    </header>
+
+    <div class="list-scroll" id="listScroll">
+      <div class="list-tools" id="listTools" hidden>
+        <button class="btn btn-danger-outline btn-small" id="emptyTrashBtn" type="button">Esvaziar lixeira</button>
+      </div>
+      <ul class="note-list" id="noteList"></ul>
+      <div class="list-empty" id="listEmpty" hidden></div>
+    </div>
+  </aside>
+
+  <!-- ===================== ÁREA PRINCIPAL ===================== -->
+  <main class="main" id="main">
+
+    <!-- Resumo -->
+    <section class="view" id="viewDashboard" aria-labelledby="dashTitle">
+      <div class="view-scroll">
+        <header class="view-head">
+          <button class="icon-btn back-btn" type="button" data-action="back" aria-label="Voltar para a lista">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+          </button>
+          <div class="view-title">
+            <h2 id="dashTitle">Minhas notas</h2>
+            <p>Um resumo do que você guardou até agora.</p>
+          </div>
+          <button class="btn btn-primary" id="dashNew" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            Nova nota
+          </button>
+        </header>
+
+        <div class="stats" id="dashStats"></div>
+
+        <div class="dash-grid">
+          <section class="panel" aria-labelledby="dashCatTitle">
+            <h3 id="dashCatTitle">Categorias em uso</h3>
+            <ul class="cat-list" id="dashCategories"></ul>
+          </section>
+          <section class="panel" aria-labelledby="dashRecentTitle">
+            <h3 id="dashRecentTitle">Notas recentes</h3>
+            <ul class="recent-list" id="dashRecent"></ul>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- Editor -->
+    <section class="view view-note" id="viewEditor" hidden aria-label="Editor de nota">
+      <div class="note-top">
+        <div class="tool-group">
+          <button class="icon-btn back-btn" type="button" data-action="back" aria-label="Voltar para a lista">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+          </button>
+          <label class="select-wrap select-compact">
+            <span class="sr-only">Categoria da nota</span>
+            <select id="noteCategory"></select>
+          </label>
+        </div>
+
+        <div class="swatches" id="swatches" role="radiogroup" aria-label="Cor da nota">
+          <button class="swatch" type="button" role="radio" data-color="none" aria-checked="true" aria-label="Sem cor"></button>
+          <button class="swatch" type="button" role="radio" data-color="butter" aria-checked="false" aria-label="Amarelo"></button>
+          <button class="swatch" type="button" role="radio" data-color="mint" aria-checked="false" aria-label="Verde"></button>
+          <button class="swatch" type="button" role="radio" data-color="sky" aria-checked="false" aria-label="Azul"></button>
+          <button class="swatch" type="button" role="radio" data-color="rose" aria-checked="false" aria-label="Rosa"></button>
+          <button class="swatch" type="button" role="radio" data-color="lilac" aria-checked="false" aria-label="Lilás"></button>
+        </div>
+
+        <div class="tool-group">
+          <button class="icon-btn fav-btn" id="favBtn" type="button" aria-pressed="false" aria-label="Favoritar nota" title="Favoritar">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9L12 3.5Z"/></svg>
+          </button>
+          <button class="icon-btn pin-btn" id="pinBtn" type="button" aria-pressed="false" aria-label="Fixar nota no topo" title="Fixar no topo">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/><path d="M12 15v5"/></svg>
+          </button>
+          <button class="icon-btn del-btn" id="deleteBtn" type="button" aria-label="Mover para a lixeira" title="Mover para a lixeira">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V4h6v3"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="sheet" id="sheet">
+        <input class="note-title" id="noteTitle" type="text" placeholder="Título" aria-label="Título da nota" autocomplete="off" maxlength="200">
+
+        <div class="tag-editor">
+          <ul class="tag-list" id="noteTags"></ul>
+          <input id="tagInput" type="text" list="tagSuggestions" placeholder="Adicionar tag (ex.: urgente)" aria-label="Adicionar tag" autocomplete="off" maxlength="31">
+          <datalist id="tagSuggestions"></datalist>
+        </div>
+
+        <div class="format-bar" id="formatBar" role="toolbar" aria-label="Formatação do texto">
+          <button type="button" class="fmt fmt-bold" data-cmd="bold" aria-pressed="false" aria-label="Negrito" title="Negrito (Ctrl + B)">B</button>
+          <button type="button" class="fmt fmt-italic" data-cmd="italic" aria-pressed="false" aria-label="Itálico" title="Itálico (Ctrl + I)">I</button>
+          <button type="button" class="fmt fmt-underline" data-cmd="underline" aria-pressed="false" aria-label="Sublinhado" title="Sublinhado (Ctrl + U)">U</button>
+          <button type="button" class="fmt fmt-mark" data-cmd="highlight" aria-pressed="false" aria-label="Destacar texto" title="Destacar texto">Realce</button>
+          <span class="fmt-sep" aria-hidden="true"></span>
+          <button type="button" class="fmt" data-cmd="h2" aria-pressed="false" aria-label="Título" title="Título">Título</button>
+          <button type="button" class="fmt" data-cmd="h3" aria-pressed="false" aria-label="Subtítulo" title="Subtítulo">Subtítulo</button>
+          <span class="fmt-sep" aria-hidden="true"></span>
+          <button type="button" class="fmt" data-cmd="ul" aria-pressed="false" aria-label="Lista com marcadores" title="Lista com marcadores">Lista</button>
+          <button type="button" class="fmt" data-cmd="ol" aria-pressed="false" aria-label="Lista numerada" title="Lista numerada">Numerada</button>
+          <button type="button" class="fmt" data-cmd="checklist" aria-pressed="false" aria-label="Checklist" title="Checklist">Checklist</button>
+          <span class="fmt-sep" aria-hidden="true"></span>
+          <button type="button" class="fmt" data-cmd="link" aria-pressed="false" aria-label="Inserir link" title="Inserir link">Link</button>
+          <button type="button" class="fmt" data-cmd="code" aria-pressed="false" aria-label="Bloco de código" title="Bloco de código">Código</button>
+          <button type="button" class="fmt" data-cmd="image" aria-label="Inserir imagem" title="Inserir imagem">Imagem</button>
+        </div>
+
+        <div class="rich" id="noteContent" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Conteúdo da nota" data-placeholder="Comece a escrever…" spellcheck="true"></div>
+
+        <footer class="foot">
+          <span id="wordCount"></span>
+          <span class="status" id="saveStatus" data-state="saved" role="status">Salvo</span>
+        </footer>
+      </div>
+    </section>
+
+    <!-- Nota na lixeira (somente leitura) -->
+    <section class="view view-note" id="viewTrash" hidden aria-label="Nota na lixeira">
+      <div class="note-top">
+        <div class="tool-group">
+          <button class="icon-btn back-btn" type="button" data-action="back" aria-label="Voltar para a lista">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+          </button>
+          <span class="trash-flag">Na lixeira</span>
+        </div>
+        <div class="tool-group">
+          <button class="btn btn-primary" id="restoreBtn" type="button">Restaurar</button>
+          <button class="btn btn-danger-outline" id="deleteForeverBtn" type="button">Excluir permanentemente</button>
+        </div>
+      </div>
+      <div class="sheet">
+        <h2 class="note-title static" id="trashTitle"></h2>
+        <div class="trash-meta" id="trashMeta"></div>
+        <div class="rich readonly" id="trashContent"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ===================== TELA DE BLOQUEIO (PIN) ===================== -->
+<div class="lock-screen" id="lockScreen" hidden role="dialog" aria-modal="true" aria-labelledby="lockTitle">
+  <form class="lock-card" id="lockForm" novalidate>
+    <span class="lock-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+    </span>
+    <h1 id="lockTitle">Suas notas estão protegidas</h1>
+    <label class="field">
+      <span>Digite seu PIN</span>
+      <input class="pin-input" id="lockPin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="8" placeholder="••••">
+    </label>
+    <p class="form-error" id="lockError" role="alert"></p>
+    <button class="btn btn-primary btn-block" id="lockSubmit" type="submit">Entrar</button>
+    <button class="link-btn" id="forgotPin" type="button">Esqueci meu PIN</button>
+  </form>
+</div>
+
+<!-- ===================== DIÁLOGOS ===================== -->
+<dialog class="dialog dialog-wide" id="settingsDialog" aria-labelledby="settingsTitle">
+  <div class="dialog-head">
+    <h2 id="settingsTitle">Configurações</h2>
+    <button class="icon-btn" type="button" data-close aria-label="Fechar">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+  </div>
+  <div class="dialog-body">
+    <section class="setting-group" aria-labelledby="setDataTitle">
+      <h3 id="setDataTitle">Dados</h3>
+      <p class="hint">As notas ficam salvas neste navegador. Faça backups de vez em quando para não perder nada.</p>
+      <div class="setting-actions">
+        <button class="btn" id="exportJsonBtn" type="button">Exportar notas (JSON)</button>
+        <button class="btn" id="exportMdBtn" type="button">Exportar Markdown</button>
+        <button class="btn" id="importBtn" type="button">Importar backup</button>
+      </div>
+      <div class="meter">
+        <div class="meter-bar" aria-hidden="true"><span id="meterFill"></span></div>
+        <p class="hint" id="meterText"></p>
+      </div>
+    </section>
+
+    <section class="setting-group" aria-labelledby="setSecTitle">
+      <h3 id="setSecTitle">Segurança</h3>
+      <p id="pinStatus"></p>
+      <p class="hint">O PIN é uma proteção local: ele criptografa as notas guardadas neste navegador. Não há recuperação se você esquecer o PIN. Backups exportados não são criptografados.</p>
+      <div class="setting-actions">
+        <button class="btn" id="pinEnableBtn" type="button">Ativar PIN</button>
+        <button class="btn" id="pinChangeBtn" type="button" hidden>Alterar PIN</button>
+        <button class="btn" id="pinDisableBtn" type="button" hidden>Desativar PIN</button>
+      </div>
+    </section>
+
+    <section class="setting-group danger-zone" aria-labelledby="setDangerTitle">
+      <h3 id="setDangerTitle">Zona de risco</h3>
+      <p class="hint">Apaga todas as notas, inclusive as da lixeira, e remove o PIN. Faça um backup antes.</p>
+      <button class="btn btn-danger-outline" id="clearAllBtn" type="button">Limpar todos os dados</button>
+    </section>
+  </div>
+</dialog>
+
+<dialog class="dialog dialog-narrow" id="confirmDialog" aria-labelledby="confirmTitle">
+  <form method="dialog">
+    <div class="dialog-head"><h2 id="confirmTitle"></h2></div>
+    <div class="dialog-body">
+      <p id="confirmMessage"></p>
+      <label class="field" id="confirmField" hidden>
+        <span id="confirmFieldLabel"></span>
+        <input id="confirmInput" type="text" autocomplete="off">
+      </label>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn" id="confirmCancel" type="button">Cancelar</button>
+      <button class="btn btn-primary" id="confirmOk" type="submit" value="ok">Confirmar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="dialog dialog-narrow" id="linkDialog" aria-labelledby="linkTitle">
+  <form id="linkForm" novalidate>
+    <div class="dialog-head"><h2 id="linkTitle">Inserir link</h2></div>
+    <div class="dialog-body">
+      <label class="field">
+        <span>Endereço</span>
+        <input id="linkUrl" type="text" placeholder="https://exemplo.com" autocomplete="off">
+      </label>
+      <p class="form-error" id="linkError" role="alert"></p>
+    </div>
+    <div class="dialog-foot">
+      <button class="link-btn danger" id="linkRemove" type="button" hidden>Remover link</button>
+      <button class="btn" type="button" data-close>Cancelar</button>
+      <button class="btn btn-primary" type="submit">Aplicar link</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="dialog dialog-narrow" id="pinDialog" aria-labelledby="pinTitle">
+  <form id="pinForm" novalidate>
+    <div class="dialog-head"><h2 id="pinTitle"></h2></div>
+    <div class="dialog-body">
+      <p class="hint" id="pinHint"></p>
+      <label class="field" id="pinCurrentField">
+        <span>PIN atual</span>
+        <input class="pin-input" id="pinCurrent" type="password" inputmode="numeric" autocomplete="current-password" maxlength="8">
+      </label>
+      <label class="field" id="pinNewField">
+        <span>Novo PIN (4 a 8 números)</span>
+        <input class="pin-input" id="pinNew" type="password" inputmode="numeric" autocomplete="new-password" maxlength="8">
+      </label>
+      <label class="field" id="pinConfirmField">
+        <span>Repita o novo PIN</span>
+        <input class="pin-input" id="pinConfirm" type="password" inputmode="numeric" autocomplete="new-password" maxlength="8">
+      </label>
+      <p class="form-error" id="pinError" role="alert"></p>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn" type="button" data-close>Cancelar</button>
+      <button class="btn btn-primary" id="pinSubmit" type="submit">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Aviso rápido -->
+<div class="toast" id="toast" role="status" aria-live="polite">
+  <span id="toastMsg"></span>
+  <button type="button" id="toastAction" hidden></button>
+</div>
+
+<!-- Seletores de arquivo (ficam ocultos) -->
+<input type="file" id="importInput" accept="application/json,.json" hidden>
+<input type="file" id="imageInput" accept="image/*" hidden>
+
+<script src="script.js" defer></script>
+</body>
+</html>
