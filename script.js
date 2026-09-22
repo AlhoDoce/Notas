@@ -21,6 +21,15 @@ const DEFAULT_CATEGORIES = [
   { id: "ideias", name: "Ideias" }
 ];
 const COLORS = ["none", "butter", "mint", "sky", "rose", "lilac"];
+/** Paleta de cores do realce (mesmos nomes e tons das cores de nota, para o app usar uma linguagem visual única). */
+const HIGHLIGHT_COLORS = [
+  { id: "butter", name: "Amarelo" },
+  { id: "mint", name: "Verde" },
+  { id: "sky", name: "Azul" },
+  { id: "rose", name: "Rosa" },
+  { id: "lilac", name: "Lilás" }
+];
+const HIGHLIGHT_IDS = new Set(HIGHLIGHT_COLORS.map((c) => c.id));
 const SAVE_DELAY_MS = 700;
 
 /*
@@ -587,6 +596,10 @@ function cleanChildren(from, to) {
       const href = (node.getAttribute("href") || "").trim();
       if (!SAFE_HREF.test(href)) { cleanChildren(node, to); return; }
       copy.setAttribute("href", href);
+    }
+    if (tag === "MARK") {
+      const c = node.getAttribute("data-color");
+      if (HIGHLIGHT_IDS.has(c) && c !== "butter") copy.setAttribute("data-color", c);
     }
     if (tag === "UL" && node.classList.contains("checklist")) copy.className = "checklist";
     if (tag === "LI") {
@@ -1367,6 +1380,7 @@ function setSort(value) {
 function selectNote(id, { focus = null } = {}) {
   const note = getNote(id);
   if (!note) return;
+  closeHighlightPicker();
   flushEdits();
   const previous = state.ui.activeId;
   if (previous && previous !== id) discardIfEmpty(previous);
@@ -1380,6 +1394,7 @@ function selectNote(id, { focus = null } = {}) {
 
 /** Fecha a nota aberta e volta ao resumo (e à lista, no celular). */
 function leaveNote() {
+  closeHighlightPicker();
   state.ui.activeId = null;
   showView("dashboard");
   setPane("list");
@@ -1467,7 +1482,31 @@ function updateWordCount() {
   // Usa o HTML (e não innerText) porque innerText fica vazio quando o painel ainda está oculto no celular.
   const text = plainText(els.noteContent.innerHTML).replace(/\[imagem\]/g, "").trim();
   const words = text ? text.split(/\s+/).length : 0;
+  const lines = countLines(els.noteContent);
   els.wordCount.textContent = `${words} ${words === 1 ? "palavra" : "palavras"}`;
+  els.lineCount.textContent = `${lines} ${lines === 1 ? "linha" : "linhas"}`;
+}
+/**
+ * Conta linhas visuais no editor: cada bloco de nível superior (parágrafo, item de lista, linha de
+ * título...) é uma linha; um bloco <pre> com várias quebras internas conta uma linha por quebra.
+ * Texto ou imagem soltos antes do primeiro Enter (sem bloco ao redor) contam como 1 linha.
+ */
+function countLines(root) {
+  const BLOCK = new Set(["P", "DIV", "H2", "H3", "BLOCKQUOTE"]);
+  let lines = 0, loose = false;
+  root.childNodes.forEach((node) => {
+    if (node.nodeType === Node.TEXT_NODE) { if (node.textContent.trim()) loose = true; return; }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = node.tagName;
+    if (tag === "BR") lines++;
+    else if (tag === "PRE") lines += Math.max(1, node.textContent.split("\n").length);
+    else if (tag === "UL" || tag === "OL") lines += Math.max(1, node.children.length);
+    else if (BLOCK.has(tag)) lines++;
+    else if (node.textContent.trim() || node.querySelector("img")) loose = true; // formatação solta (b, i, mark...) fora de um bloco
+  });
+  if (loose) lines++;
+  if (!lines && (root.textContent.trim() || root.querySelector("img"))) lines = 1;
+  return lines;
 }
 
 /* ---------- Seleção e comandos de formatação ---------- */
@@ -1541,30 +1580,84 @@ function selectAround(startNode, endNode, inside = false) {
   sel.removeAllRanges();
   sel.addRange(range);
 }
-function toggleHighlight() {
-  els.noteContent.focus();
+/** Monta os botões de cor do popover de realce a partir de HIGHLIGHT_COLORS. */
+function buildHighlightPicker() {
+  els.highlightPopover.replaceChildren(
+    ...HIGHLIGHT_COLORS.map((c) => h("button", {
+      type: "button", class: "hl-swatch", dataset: { hl: c.id }, role: "menuitemradio", "aria-checked": "false", "aria-label": c.name
+    })),
+    h("span", { class: "hl-sep", "aria-hidden": "true" }),
+    h("button", { type: "button", class: "hl-remove", dataset: { hl: "none" }, role: "menuitem", text: "Remover" })
+  );
+}
+
+function toggleHighlightPicker() {
+  if (els.highlightPopover.hidden) openHighlightPicker(); else closeHighlightPicker();
+}
+function openHighlightPicker() {
+  saveSelection();
+  const mark = closestInSelection("mark");
+  const current = mark ? mark.dataset.color || "butter" : null;
+  els.highlightPopover.querySelectorAll("[data-hl]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.hl === current)));
+  els.highlightPopover.hidden = false;
+  positionHighlightPicker();
+  window.addEventListener("resize", positionHighlightPicker);
+  els.fmtMarkBtn.setAttribute("aria-expanded", "true");
+  document.addEventListener("click", onOutsideHighlightClick, true);
+  document.addEventListener("keydown", onHighlightPickerKeydown, true);
+}
+/** Mantém o popover dentro da tela, mesmo quando o botão "Realce" está perto da borda (mobile). */
+function positionHighlightPicker() {
+  const btn = els.fmtMarkBtn.getBoundingClientRect();
+  const pop = els.highlightPopover;
+  const maxLeft = Math.max(8, window.innerWidth - pop.offsetWidth - 8);
+  pop.style.top = btn.bottom + 8 + "px";
+  pop.style.left = Math.min(maxLeft, Math.max(8, btn.right - pop.offsetWidth)) + "px";
+}
+function closeHighlightPicker() {
+  if (els.highlightPopover.hidden) return;
+  els.highlightPopover.hidden = true;
+  els.fmtMarkBtn.setAttribute("aria-expanded", "false");
+  document.removeEventListener("click", onOutsideHighlightClick, true);
+  document.removeEventListener("keydown", onHighlightPickerKeydown, true);
+  window.removeEventListener("resize", positionHighlightPicker);
+}
+function onOutsideHighlightClick(e) {
+  if (!els.highlightPopover.contains(e.target) && e.target !== els.fmtMarkBtn) closeHighlightPicker();
+}
+function onHighlightPickerKeydown(e) {
+  if (e.key === "Escape") { e.preventDefault(); closeHighlightPicker(); els.noteContent.focus(); }
+}
+/** Aplica (ou remove, com colorId null) a cor de destaque na seleção salva. "butter" é a cor padrão (sem atributo, compatível com notas antigas). */
+function applyHighlight(colorId) {
+  restoreSelection();
   const sel = window.getSelection();
   const marks = marksInSelection();
-  if (marks.length) { // remove o destaque, mantendo o texto selecionado
+  if (colorId === null) {
+    if (!marks.length) return;
     const first = marks[0].firstChild, last = marks[marks.length - 1].lastChild;
     marks.forEach((m) => m.replaceWith(...m.childNodes));
     if (first && last) selectAround(first, last);
+  } else if (marks.length) { // já destacado: só troca a cor
+    marks.forEach((m) => { if (colorId === "butter") m.removeAttribute("data-color"); else m.dataset.color = colorId; });
+    selectAround(marks[0], marks[marks.length - 1], true);
   } else if (sel.rangeCount && !sel.isCollapsed) {
     // O Chrome gera <span style="background-color"> com hiliteColor; convertemos em <mark>,
     // que é a única forma de destaque que a sanitização mantém ao salvar.
     document.execCommand("styleWithCSS", false, true);
     document.execCommand("hiliteColor", false, "#FFE58A");
     document.execCommand("styleWithCSS", false, false);
-    const created = normalizeHighlights();
+    const created = normalizeHighlights(colorId);
     if (created.length) selectAround(created[0], created[created.length - 1], true); // permite alternar de novo
   } else return;
   onFormatted();
 }
-function normalizeHighlights() {
+function normalizeHighlights(colorId) {
   const marks = [];
   els.noteContent.querySelectorAll("span[style]").forEach((span) => {
     if (!/background/i.test(span.getAttribute("style"))) return;
     const mark = document.createElement("mark");
+    if (colorId && colorId !== "butter") mark.dataset.color = colorId;
     mark.append(...span.childNodes);
     span.replaceWith(mark);
     marks.push(mark);
@@ -1576,7 +1669,7 @@ const COMMANDS = {
   bold: () => exec("bold"),
   italic: () => exec("italic"),
   underline: () => exec("underline"),
-  highlight: toggleHighlight,
+  highlight: toggleHighlightPicker,
   h2: () => toggleBlock("h2"),
   h3: () => toggleBlock("h3"),
   ul: toggleBulletList,
@@ -2142,6 +2235,13 @@ function bindEvents() {
     await attachPdfs(files);
   });
   els.pdfDialog.addEventListener("close", () => { els.pdfFrame.src = "about:blank"; els.pdfOpenTab.removeAttribute("href"); });
+  els.highlightPopover.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-hl]");
+    if (!btn) return;
+    e.stopPropagation();
+    applyHighlight(btn.dataset.hl === "none" ? null : btn.dataset.hl);
+    closeHighlightPicker();
+  });
   els.linkForm.addEventListener("submit", applyLink);
   els.linkRemove.addEventListener("click", removeLink);
 
@@ -2235,6 +2335,7 @@ function startApp() {
 function boot() {
   document.querySelectorAll("[id]").forEach((el) => { els[el.id] = el; });
   document.execCommand("defaultParagraphSeparator", false, "div"); // "p" faz o Chrome aninhar <p> dentro de <p>
+  buildHighlightPicker();
   loadPrefs();
   applyTheme();
   bindEvents();

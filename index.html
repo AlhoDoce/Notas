@@ -183,7 +183,10 @@
           <button type="button" class="fmt fmt-bold" data-cmd="bold" aria-pressed="false" aria-label="Negrito" title="Negrito (Ctrl + B)">B</button>
           <button type="button" class="fmt fmt-italic" data-cmd="italic" aria-pressed="false" aria-label="Itálico" title="Itálico (Ctrl + I)">I</button>
           <button type="button" class="fmt fmt-underline" data-cmd="underline" aria-pressed="false" aria-label="Sublinhado" title="Sublinhado (Ctrl + U)">U</button>
-          <button type="button" class="fmt fmt-mark" data-cmd="highlight" aria-pressed="false" aria-label="Destacar texto" title="Destacar texto">Realce</button>
+          <div class="fmt-mark-wrap">
+            <button type="button" class="fmt fmt-mark" id="fmtMarkBtn" data-cmd="highlight" aria-haspopup="true" aria-expanded="false" aria-pressed="false" aria-label="Destacar texto" title="Destacar texto">Realce</button>
+            <div class="highlight-popover" id="highlightPopover" role="menu" aria-label="Cor do destaque" hidden></div>
+          </div>
           <span class="fmt-sep" aria-hidden="true"></span>
           <button type="button" class="fmt" data-cmd="h2" aria-pressed="false" aria-label="Título" title="Título">Título</button>
           <button type="button" class="fmt" data-cmd="h3" aria-pressed="false" aria-label="Subtítulo" title="Subtítulo">Subtítulo</button>
@@ -206,7 +209,11 @@
         </section>
 
         <footer class="foot">
-          <span id="wordCount"></span>
+          <span class="foot-counts">
+            <span id="wordCount"></span>
+            <span class="foot-sep" aria-hidden="true">·</span>
+            <span id="lineCount"></span>
+          </span>
           <span class="status" id="saveStatus" data-state="saved" role="status">Salvo</span>
         </footer>
       </div>
