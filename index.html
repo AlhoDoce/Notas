@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%233F51E8'/%3E%3Cpath d='M7 6h7l3 3v9a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Z' fill='none' stroke='%23FFFFFF' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M14 6v3h3' fill='none' stroke='%23FFFFFF' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M9 13h6M9 16h6' stroke='%23FFFFFF' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E">
 </head>
 <body>
 
@@ -194,9 +195,15 @@
           <button type="button" class="fmt" data-cmd="link" aria-pressed="false" aria-label="Inserir link" title="Inserir link">Link</button>
           <button type="button" class="fmt" data-cmd="code" aria-pressed="false" aria-label="Bloco de código" title="Bloco de código">Código</button>
           <button type="button" class="fmt" data-cmd="image" aria-label="Inserir imagem" title="Inserir imagem">Imagem</button>
+          <button type="button" class="fmt" data-cmd="pdf" aria-label="Anexar PDF" title="Anexar PDF">PDF</button>
         </div>
 
         <div class="rich" id="noteContent" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Conteúdo da nota" data-placeholder="Comece a escrever…" spellcheck="true"></div>
+
+        <section class="attachments" id="attachments" hidden aria-labelledby="attachmentsTitle">
+          <h3 id="attachmentsTitle">Anexos</h3>
+          <ul class="attach-list" id="attachList"></ul>
+        </section>
 
         <footer class="foot">
           <span id="wordCount"></span>
@@ -223,6 +230,10 @@
         <h2 class="note-title static" id="trashTitle"></h2>
         <div class="trash-meta" id="trashMeta"></div>
         <div class="rich readonly" id="trashContent"></div>
+        <section class="attachments" id="trashAttachments" hidden aria-labelledby="trashAttachmentsTitle">
+          <h3 id="trashAttachmentsTitle">Anexos</h3>
+          <ul class="attach-list" id="trashAttachList"></ul>
+        </section>
       </div>
     </section>
 
@@ -266,6 +277,7 @@
       <div class="meter">
         <div class="meter-bar" aria-hidden="true"><span id="meterFill"></span></div>
         <p class="hint" id="meterText"></p>
+        <p class="hint" id="meterFiles"></p>
       </div>
     </section>
 
@@ -349,6 +361,21 @@
   </form>
 </dialog>
 
+<dialog class="dialog dialog-pdf" id="pdfDialog" aria-labelledby="pdfTitle">
+  <div class="dialog-head">
+    <h2 id="pdfTitle">Documento</h2>
+    <div class="dialog-head-actions">
+      <a class="btn btn-small" id="pdfOpenTab" target="_blank" rel="noopener noreferrer">Abrir em nova aba</a>
+      <button class="icon-btn" type="button" data-close aria-label="Fechar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="dialog-body pdf-body">
+    <iframe id="pdfFrame" title="Visualização do PDF"></iframe>
+  </div>
+</dialog>
+
 <!-- Aviso rápido -->
 <div class="toast" id="toast" role="status" aria-live="polite">
   <span id="toastMsg"></span>
@@ -357,7 +384,8 @@
 
 <!-- Seletores de arquivo (ficam ocultos) -->
 <input type="file" id="importInput" accept="application/json,.json" hidden>
-<input type="file" id="imageInput" accept="image/*" hidden>
+<input type="file" id="imageInput" accept="image/*" multiple hidden>
+<input type="file" id="pdfInput" accept="application/pdf,.pdf" multiple hidden>
 
 <script src="script.js" defer></script>
 </body>

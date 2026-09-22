@@ -360,7 +360,12 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .rich code { padding: 1px 5px; border-radius: 5px; background: var(--code-bg); font-family: var(--mono); font-size: .85em; }
 .rich pre code { padding: 0; background: none; }
 .rich blockquote { margin: .7em 0; padding-left: 14px; border-left: 3px solid var(--line); color: var(--ink-2); }
-.rich img { display: block; max-width: 100%; height: auto; margin: .7em 0; border-radius: 10px; }
+.rich img { display: block; max-width: 100%; height: auto; margin: .7em 0; border-radius: 10px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.rich img.img-missing {
+  display: flex; align-items: center; justify-content: center; min-height: 80px;
+  font-family: var(--ui); font-size: 13px; color: var(--ink-3);
+  border: 1px dashed var(--line);
+}
 
 .rich ul.checklist { list-style: none; padding-left: 0; }
 .rich ul.checklist > li { position: relative; padding-left: 32px; min-height: 1.75em; }
@@ -373,6 +378,22 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .rich ul.checklist > li[data-checked="true"]::before { content: "✓"; background: var(--accent); border-color: var(--accent); }
 .rich ul.checklist > li[data-checked="true"] { color: var(--ink-3); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--ink) 30%, transparent); }
 .rich.readonly ul.checklist > li::before { cursor: default; }
+
+/* ---------- Anexos (PDFs) ---------- */
+.attachments { flex: none; padding: 10px 0 4px; border-top: 1px solid color-mix(in srgb, var(--ink) 10%, transparent); }
+.attachments h3 { margin-bottom: 8px; font-size: 13px; font-weight: 600; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; }
+.attach-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.attach-item {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--paper) 70%, transparent);
+}
+.attach-icon { flex: none; width: 22px; height: 22px; color: var(--accent); }
+.attach-info { flex: 1; min-width: 0; display: grid; }
+.attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.attach-meta { color: var(--ink-3); font-size: 12.5px; }
+.attach-actions { flex: none; display: flex; flex-wrap: wrap; gap: 6px; }
+.attach-tag { display: inline-flex; align-items: center; gap: 3px; }
+.attach-tag svg { width: 13px; height: 13px; stroke-width: 2; }
 
 .foot { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0 16px; border-top: 1px solid color-mix(in srgb, var(--ink) 10%, transparent); color: var(--ink-3); font-size: 13px; }
 .status { display: inline-flex; align-items: center; gap: 7px; }
@@ -400,9 +421,16 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .dialog-narrow { width: min(420px, calc(100vw - 24px)); }
 @keyframes dialog-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 20px 6px; }
-.dialog-head h2 { font-family: var(--write); font-weight: 500; font-size: 24px; }
+.dialog-head h2 { font-family: var(--write); font-weight: 500; font-size: 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dialog-head-actions { display: flex; align-items: center; gap: 6px; flex: none; }
 .dialog-body { padding: 8px 20px 12px; overflow-y: auto; }
 .dialog-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 20px 18px; }
+
+/* Diálogo de visualização do PDF: quase a tela toda, sem padding na área do iframe. */
+.dialog-pdf { width: min(920px, calc(100vw - 24px)); height: calc(100dvh - 32px); }
+.dialog-pdf .dialog-head h2 { font-size: 17px; }
+.pdf-body { flex: 1; min-height: 0; padding: 0; display: flex; }
+.pdf-body iframe { flex: 1; width: 100%; border: 0; background: #525659; }
 
 .setting-group { padding: 14px 0; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
 .setting-group:last-child { border-bottom: 0; }
@@ -455,6 +483,10 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
   .view-head .btn { order: 3; }
   .rich { font-size: 18px; }
   .swatches { order: 3; width: 100%; justify-content: flex-start; padding: 6px 4px 2px; }
+  .attach-item { flex-wrap: wrap; }
+  .attach-info { flex-basis: 100%; }
+  .attach-actions { flex-basis: 100%; justify-content: flex-start; }
+  .dialog-pdf { width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
 }
 
 @media (max-width: 420px) {

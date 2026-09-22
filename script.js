@@ -24,17 +24,25 @@ const COLORS = ["none", "butter", "mint", "sky", "rose", "lilac"];
 const SAVE_DELAY_MS = 700;
 
 /*
- * IMAGENS E LIMITES DO localStorage
- * O localStorage guarda cerca de 5 milhões de caracteres por site. Imagens em
- * base64 ocupam muito, então cada imagem é redimensionada e comprimida (JPEG)
- * antes de entrar na nota, e o app recusa novas imagens quando o espaço está
- * acabando. O medidor em Configurações → Dados mostra o uso.
- * Se você precisar de muitas imagens, o próximo passo é guardá-las no
- * IndexedDB e deixar só uma referência na nota.
+ * ANEXOS: IMAGENS E PDFs
+ * O texto das notas fica no localStorage (cerca de 5 milhões de caracteres por
+ * site). Os arquivos ficam no IndexedDB, que aceita centenas de MB, e a nota
+ * guarda só uma referência: <img data-file="ID"> dentro do texto e a lista
+ * note.attachments para os PDFs. Com PIN ativo, os arquivos também são
+ * criptografados (veja Files e Vault).
  */
 const QUOTA_CHARS = 5_000_000;
-const MAX_IMAGE_SIDE = 1280;
-const MAX_IMAGE_CHARS = 450_000;
+const MAX_IMAGE_SIDE = 1600;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_PDF_BYTES = 25 * 1024 * 1024;
+const MAX_ATTACHMENTS = 20;
+const MAX_IMPORT_BYTES = 100 * 1024 * 1024;
+const GC_MIN_AGE_MS = 6 * 3600e3;      // arquivos sem uso só são apagados depois disso
+const BACKUP_SCHEMA = 3;               // 3 = backup com arquivos
+const ATTACH_TYPES = ["application/pdf"];
+const BACKUP_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"];
+const FILE_ID = /^[a-z0-9]{6,40}$/;
+const FILE_ID_ATTR = /data-file="([a-z0-9]{6,40})"/g;
 
 const PIN_RE = /^\d{4,8}$/;
 const PBKDF2_ITERATIONS = 150_000;
@@ -45,7 +53,7 @@ const els = {};
 const state = {
   data: null, // { schema, categories, notes }
   prefs: { theme: null, sort: "recent" },
-  security: { enabled: false, key: null, salt: null },
+  security: { enabled: false, key: null, salt: null, fileKey: null },
   ui: { scope: "all", category: "all", tags: [], query: "", activeId: null, view: "dashboard", saveState: "saved" }
 };
 
@@ -60,6 +68,8 @@ let failedUnlocks = 0;
 let lockoutUntil = 0;
 const textCache = new Map();
 const searchCache = new Map();
+const urlCache = new Map(); // id do arquivo -> Promise da URL (blob:) usada em <img> e no visualizador
+let persistAsked = false;
 
 /* ============================================================
  * 2. UTILIDADES
@@ -96,7 +106,9 @@ function h(tag, props = {}, ...children) {
 const ICONS = {
   pin: "M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Z M12 15v5",
   star: "M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9L12 3.5Z",
-  x: "M6 6l12 12M18 6 6 18"
+  x: "M6 6l12 12M18 6 6 18",
+  clip: "M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5",
+  file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8"
 };
 function icon(name, className = "") {
   const NS = "http://www.w3.org/2000/svg";
@@ -124,8 +136,8 @@ function formatRelative(ts) {
   return d.toLocaleDateString("pt-BR", opts).replace(".", "");
 }
 
-function downloadFile(name, text, mime) {
-  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+function downloadFile(name, data, mime) { // data: texto ou Blob
+  const url = URL.createObjectURL(new Blob([data], { type: mime }));
   const link = h("a", { href: url, download: name });
   document.body.append(link);
   link.click();
@@ -221,8 +233,157 @@ const Vault = {
   async decrypt(key, { iv, ct }) {
     const buf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: Vault.unb64(iv) }, key, Vault.unb64(ct));
     return new TextDecoder().decode(buf);
+  },
+  /* Arquivos (binário) */
+  async encryptBytes(key, buffer) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, buffer);
+    return { iv, ct };
+  },
+  decryptBytes(key, iv, ct) { return crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); },
+  /*
+   * Os arquivos usam uma chave própria, aleatória (fileKey), guardada dentro do
+   * cofre e protegida pelo PIN. Assim, trocar o PIN não obriga a recriptografar
+   * todos os anexos: só a chave é reprotegida.
+   */
+  newFileKey() { return crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]); },
+  async exportFileKey(key) { return Vault.b64(new Uint8Array(await crypto.subtle.exportKey("raw", key))); },
+  importFileKey(b64) { return crypto.subtle.importKey("raw", Vault.unb64(b64), { name: "AES-GCM" }, true, ["encrypt", "decrypt"]); }
+};
+
+/** Chave dos arquivos no momento: null = sem PIN (arquivos em claro). */
+function currentFileKey() {
+  if (!state.security.enabled) return null;
+  if (!state.security.fileKey) throw new Error("As notas estão bloqueadas.");
+  return state.security.fileKey;
+}
+
+/*
+ * ARMAZENAMENTO DE ARQUIVOS (IndexedDB)
+ * Dois depósitos: "blobs" (os bytes, criptografados quando há PIN) e "meta"
+ * (tipo, tamanho e data; sem o nome do arquivo, que fica dentro da nota).
+ * Cada registro diz se está criptografado (enc), então um estado misto, por
+ * exemplo depois de uma falha no meio da ativação do PIN, continua legível.
+ */
+const Files = {
+  _db: null,
+  open() {
+    if (!this._db) {
+      this._db = new Promise((resolve, reject) => {
+        if (!window.indexedDB) { reject(new Error("IndexedDB indisponível")); return; }
+        let req;
+        try { req = indexedDB.open("notas-files", 1); } catch (e) { reject(e); return; }
+        req.onupgradeneeded = () => {
+          req.result.createObjectStore("blobs", { keyPath: "id" });
+          req.result.createObjectStore("meta", { keyPath: "id" });
+        };
+        req.onsuccess = () => {
+          req.result.onversionchange = () => { req.result.close(); Files._db = null; };
+          resolve(req.result);
+        };
+        req.onerror = () => reject(req.error || new Error("Falha ao abrir o armazenamento de anexos."));
+        req.onblocked = () => reject(new Error("O armazenamento de anexos está bloqueado por outra aba."));
+      });
+      this._db.catch(() => { this._db = null; });
+    }
+    return this._db;
+  },
+  async _tx(stores, mode) { return (await this.open()).transaction(stores, mode); },
+  _done(tx) {
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error("Operação cancelada."));
+    });
+  },
+  _req(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  },
+  async _seal(plain, key = currentFileKey()) {
+    if (!key) return { enc: false, iv: null, data: plain };
+    const { iv, ct } = await Vault.encryptBytes(key, plain);
+    return { enc: true, iv, data: ct };
+  },
+  async _unseal(rec, key = currentFileKey()) {
+    if (!rec.enc) return rec.data;
+    if (!key) throw new Error("Arquivo protegido: desbloqueie as notas.");
+    return Vault.decryptBytes(key, rec.iv, rec.data);
+  },
+
+  async put(id, source, mime) {
+    const plain = await source.arrayBuffer();
+    const rec = await this._seal(plain);
+    const tx = await this._tx(["blobs", "meta"], "readwrite");
+    const done = this._done(tx);
+    tx.objectStore("blobs").put({ id, ...rec });
+    tx.objectStore("meta").put({ id, t: Date.now(), mime, size: plain.byteLength });
+    await done;
+  },
+  async get(id) {
+    const tx = await this._tx(["blobs", "meta"], "readonly");
+    const [rec, meta] = await Promise.all([this._req(tx.objectStore("blobs").get(id)), this._req(tx.objectStore("meta").get(id))]);
+    if (!rec || !meta) return null;
+    return new Blob([await this._unseal(rec)], { type: meta.mime });
+  },
+  async remove(ids) {
+    if (!ids.length) return;
+    const tx = await this._tx(["blobs", "meta"], "readwrite");
+    const done = this._done(tx);
+    ids.forEach((id) => { tx.objectStore("blobs").delete(id); tx.objectStore("meta").delete(id); });
+    await done;
+  },
+  async clear() {
+    try { await this.open(); } catch (e) { return; }
+    const tx = await this._tx(["blobs", "meta"], "readwrite");
+    const done = this._done(tx);
+    tx.objectStore("blobs").clear();
+    tx.objectStore("meta").clear();
+    await done;
+  },
+  async list() { // [{ id, t, mime, size }]
+    const tx = await this._tx(["meta"], "readonly");
+    return this._req(tx.objectStore("meta").getAll());
+  },
+  /** Leva todos os arquivos para o estado desejado: toKey = criptografados, toKey null = em claro. Em lotes. */
+  async reencrypt(fromKey, toKey) {
+    try { await this.open(); } catch (e) { return; } // sem IndexedDB não há arquivos
+    const ids = (await this.list()).map((m) => m.id);
+    for (let i = 0; i < ids.length; i += 6) {
+      const read = await this._tx(["blobs"], "readonly");
+      const recs = (await Promise.all(ids.slice(i, i + 6).map((id) => this._req(read.objectStore("blobs").get(id))))).filter(Boolean);
+      const next = [];
+      for (const rec of recs) {
+        if (toKey && !rec.enc) next.push({ id: rec.id, ...(await this._seal(rec.data, toKey)) });
+        else if (!toKey && rec.enc) next.push({ id: rec.id, enc: false, iv: null, data: await this._unseal(rec, fromKey) });
+      }
+      if (!next.length) continue;
+      const write = await this._tx(["blobs"], "readwrite");
+      const done = this._done(write);
+      next.forEach((r) => write.objectStore("blobs").put(r));
+      await done;
+    }
   }
 };
+
+/** URL (blob:) de um arquivo guardado, com cache. Resolve null se o arquivo não existir. */
+function fileUrl(id) {
+  if (!urlCache.has(id)) {
+    const p = Files.get(id).then((blob) => (blob ? URL.createObjectURL(blob) : null));
+    urlCache.set(id, p);
+    p.then((u) => { if (!u) urlCache.delete(id); }, () => urlCache.delete(id));
+  }
+  return urlCache.get(id);
+}
+function revokeUrl(id) {
+  const p = urlCache.get(id);
+  if (!p) return;
+  urlCache.delete(id);
+  p.then((u) => { if (u) URL.revokeObjectURL(u); }, () => {});
+}
+function revokeAllUrls() { [...urlCache.keys()].forEach(revokeUrl); }
 
 function loadPrefs() {
   try {
@@ -263,7 +424,9 @@ async function writeData() {
     const json = JSON.stringify(state.data);
     if (state.security.key) {
       const { iv, ct } = await Vault.encrypt(state.security.key, json);
-      return store.set(KEYS.vault, JSON.stringify({ v: 1, salt: Vault.b64(state.security.salt), iv, ct }));
+      const vault = { v: 2, salt: Vault.b64(state.security.salt), iv, ct };
+      if (state.security.fileKey) vault.fk = await Vault.encrypt(state.security.key, await Vault.exportFileKey(state.security.fileKey));
+      return store.set(KEYS.vault, JSON.stringify(vault));
     }
     return store.set(KEYS.data, json);
   } catch (e) { console.error(e); return false; }
@@ -303,6 +466,39 @@ function normalizeTags(list) {
   return out.slice(0, 20);
 }
 
+function cleanFileName(name, fallback = "documento.pdf") {
+  const clean = String(name || "").replace(/[\u0000-\u001f\u007f\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+  return clean || fallback;
+}
+function normalizeAttachments(list) {
+  const out = [];
+  (Array.isArray(list) ? list : []).forEach((a) => {
+    if (!a || typeof a !== "object" || typeof a.id !== "string" || !FILE_ID.test(a.id) || !ATTACH_TYPES.includes(a.type)) return;
+    if (out.some((x) => x.id === a.id)) return;
+    out.push({
+      id: a.id,
+      name: cleanFileName(a.name),
+      type: a.type,
+      size: Number.isFinite(a.size) && a.size >= 0 ? a.size : 0,
+      added: Number.isFinite(a.added) ? a.added : Date.now()
+    });
+  });
+  return out.slice(0, MAX_ATTACHMENTS);
+}
+
+/** ids dos arquivos usados por uma nota (imagens no texto + PDFs anexados) */
+function noteFileIds(note) {
+  const ids = new Set();
+  for (const m of String(note.content || "").matchAll(FILE_ID_ATTR)) ids.add(m[1]);
+  (note.attachments || []).forEach((a) => ids.add(a.id));
+  return ids;
+}
+function referencedFileIds(notes) {
+  const ids = new Set();
+  notes.forEach((n) => noteFileIds(n).forEach((id) => ids.add(id)));
+  return ids;
+}
+
 function normalizeCategories(list) {
   const out = [];
   (Array.isArray(list) ? list : []).forEach((c) => {
@@ -331,6 +527,7 @@ function normalizeNote(raw, categories) {
     content: typeof raw.content === "string" ? sanitizeHtml(raw.content) : textToHtml(raw.body), // "body" = formato antigo
     category: categories.some((c) => c.id === raw.category) ? raw.category : fallbackCat,
     tags: normalizeTags(raw.tags),
+    attachments: normalizeAttachments(raw.attachments),
     color: COLORS.includes(raw.color) ? raw.color : "none",
     favorite: raw.favorite === true,
     pinned: raw.pinned === true,
@@ -371,8 +568,11 @@ function cleanChildren(from, to) {
     const tag = node.tagName;
     if (DROP_TAGS.has(tag)) return;
     if (tag === "IMG") {
+      const fileId = node.getAttribute("data-file") || "";
       const src = node.getAttribute("src") || "";
-      if (SAFE_IMG.test(src)) to.append(h("img", { src, alt: "imagem" }));
+      // Imagem guardada no IndexedDB: só o id vai para a nota (o src blob: é recriado ao abrir).
+      if (FILE_ID.test(fileId)) to.append(h("img", { "data-file": fileId, alt: "imagem" }));
+      else if (SAFE_IMG.test(src)) to.append(h("img", { src, alt: "imagem" })); // formato antigo (base64)
       return;
     }
     if (tag === "SPAN" && /background/i.test(node.getAttribute("style") || "")) {
@@ -424,15 +624,23 @@ async function enablePin(pin) {
   captureIfDirty();
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const key = await Vault.deriveKey(pin, salt);
+  const fileKey = await Vault.newFileKey();
   const previous = { ...state.security };
-  state.security = { enabled: true, key, salt };
+  state.security = { enabled: true, key, salt, fileKey };
+  // 1º o cofre (com a chave dos arquivos), 2º os arquivos. Se algo falhar no meio, nada fica ilegível.
   if (!(await saveData())) { state.security = previous; throw new Error("Não foi possível salvar. Verifique o espaço do navegador."); }
+  let allProtected = true;
+  try { await Files.reencrypt(null, fileKey); }
+  catch (e) { console.error(e); allProtected = false; }
   store.remove(KEYS.data); // remove a cópia sem criptografia
+  return allProtected;
 }
 
 async function disablePin() {
   const previous = { ...state.security };
-  state.security = { enabled: false, key: null, salt: null };
+  // Primeiro os arquivos voltam ao estado aberto (a chave ainda existe); só depois o cofre é removido.
+  await Files.reencrypt(previous.fileKey, null);
+  state.security = { enabled: false, key: null, salt: null, fileKey: null };
   if (!(await saveData())) { state.security = previous; throw new Error("Não foi possível salvar. Verifique o espaço do navegador."); }
   store.remove(KEYS.vault);
 }
@@ -442,8 +650,12 @@ async function unlockWith(pin) {
   const salt = Vault.unb64(vault.salt);
   const key = await Vault.deriveKey(pin, salt);
   const text = await Vault.decrypt(key, vault); // lança erro se o PIN estiver errado
+  let fileKey, isNewKey = false;
+  if (vault.fk) fileKey = await Vault.importFileKey(await Vault.decrypt(key, vault.fk));
+  else { fileKey = await Vault.newFileKey(); isNewKey = true; } // cofre criado antes dos anexos em arquivo
   state.data = normalizeData(JSON.parse(text));
-  state.security = { enabled: true, key, salt };
+  state.security = { enabled: true, key, salt, fileKey };
+  if (isNewKey) saveData(); // grava a chave no cofre
 }
 
 async function lockNow() {
@@ -452,10 +664,12 @@ async function lockNow() {
   await saveData();
   state.data = null;
   state.security.key = null;
+  state.security.fileKey = null;
+  revokeAllUrls();
   Object.assign(state.ui, { activeId: null, scope: "all", category: "all", tags: [], query: "" });
   textCache.clear(); searchCache.clear();
   document.querySelectorAll("dialog[open]").forEach((d) => d.close());
-  [els.noteList, els.dashRecent, els.dashCategories, els.dashStats, els.trashMeta].forEach((el) => el.replaceChildren());
+  [els.noteList, els.dashRecent, els.dashCategories, els.dashStats, els.trashMeta, els.attachList, els.trashAttachList].forEach((el) => el.replaceChildren());
   els.noteContent.innerHTML = ""; els.trashContent.innerHTML = ""; els.noteTitle.value = ""; els.searchInput.value = "";
   showLock();
 }
@@ -512,18 +726,33 @@ async function forgotPin() {
 function wipeEverything() {
   [KEYS.vault, KEYS.legacyNotes, KEYS.data + ":corrupt"].forEach(store.remove);
   state.data = emptyData();
-  state.security = { enabled: false, key: null, salt: null };
+  state.security = { enabled: false, key: null, salt: null, fileKey: null };
   textCache.clear(); searchCache.clear();
+  revokeAllUrls();
+  Files.clear().catch((e) => console.error(e));
   store.set(KEYS.data, JSON.stringify(state.data));
 }
 
 /* ---------- Backup: exportar e importar ---------- */
 
-function exportJson() {
+async function exportJson() {
   captureIfDirty();
-  const payload = { app: "notas", schema: SCHEMA, exportedAt: new Date().toISOString(), categories: state.data.categories, notes: state.data.notes };
+  const ids = [...referencedFileIds(state.data.notes)];
+  const files = {};
+  let missing = 0;
+  if (ids.length) toast("Gerando o backup com os anexos…", { duration: 60000 });
+  for (const id of ids) {
+    let blob = null;
+    try { blob = await Files.get(id); } catch (e) { /* tratado como ausente */ }
+    if (!blob) { missing++; continue; }
+    files[id] = { type: blob.type, data: Vault.b64(new Uint8Array(await blob.arrayBuffer())) };
+  }
+  const payload = { app: "notas", schema: BACKUP_SCHEMA, exportedAt: new Date().toISOString(), categories: state.data.categories, notes: state.data.notes };
+  if (ids.length) payload.files = files;
   downloadFile(`notas-backup-${dateStamp()}.json`, JSON.stringify(payload, null, 2), "application/json");
-  toast(`Backup exportado (${state.data.notes.length} notas, incluindo a lixeira).`);
+  const extra = Object.keys(files).length ? `, ${Object.keys(files).length} ${Object.keys(files).length === 1 ? "anexo" : "anexos"}` : "";
+  toast(`Backup exportado (${state.data.notes.length} notas, incluindo a lixeira${extra}).` + (missing ? ` ${missing} ${missing === 1 ? "arquivo não foi encontrado" : "arquivos não foram encontrados"} e ficou de fora.` : ""),
+    missing ? { tone: "error", duration: 9000 } : {});
 }
 
 function exportMarkdown() {
@@ -531,14 +760,16 @@ function exportMarkdown() {
   const notes = liveNotes().sort((a, b) => b.updated - a.updated);
   if (!notes.length) { toast("Não há notas para exportar."); return; }
   downloadFile(`notas-${dateStamp()}.md`, notes.map(noteToMarkdown).join("\n\n---\n\n") + "\n", "text/markdown");
-  toast("Markdown exportado. Imagens ficam apenas no backup JSON.");
+  toast("Markdown exportado. Imagens e PDFs ficam apenas no backup JSON.");
 }
 
 function noteToMarkdown(note) {
   const meta = [`Categoria: ${categoryName(note.category)}`];
   if (note.tags.length) meta.push("Tags: " + note.tags.map((t) => "#" + t).join(" "));
   meta.push("Atualizada em: " + new Date(note.updated).toLocaleString("pt-BR"));
-  return [`# ${note.title.trim() || "Sem título"}`, "", `*${meta.join(" | ")}*`, "", htmlToMarkdown(note.content)].join("\n");
+  const parts = [`# ${note.title.trim() || "Sem título"}`, "", `*${meta.join(" | ")}*`, "", htmlToMarkdown(note.content)];
+  if (note.attachments.length) parts.push("", "**Anexos (disponíveis no backup JSON):** " + note.attachments.map((a) => a.name).join(", "));
+  return parts.join("\n");
 }
 
 function htmlToMarkdown(html) {
@@ -603,18 +834,36 @@ function mdBlocks(parent) {
   return parts.join("\n\n");
 }
 
+function hasPdfHeader(bytes) {
+  return new TextDecoder("latin1").decode(bytes.subarray(0, 1024)).includes("%PDF-");
+}
+
+/** Converte um arquivo do backup (base64) em Blob, ou null se for inválido. */
+function decodeBackupFile(entry) {
+  try {
+    if (!entry || typeof entry.data !== "string" || !BACKUP_TYPES.includes(entry.type)) return null;
+    const bytes = Vault.unb64(entry.data);
+    if (bytes.length > MAX_PDF_BYTES) return null;
+    if (entry.type === "application/pdf" && !hasPdfHeader(bytes)) return null;
+    return new Blob([bytes], { type: entry.type });
+  } catch (e) { return null; }
+}
+
 /** Importa um backup JSON sem tocar nas notas existentes; conflitos de id geram novos ids. */
 async function importBackup(file) {
+  const created = []; // arquivos gravados por esta importação (desfeitos se algo falhar)
+  let snapshot = null;
   try {
-    if (file.size > 30 * 1024 * 1024) throw new Error("O arquivo é grande demais (limite de 30 MB).");
+    if (file.size > MAX_IMPORT_BYTES) throw new Error("O arquivo é grande demais (limite de 100 MB).");
     let json;
     try { json = JSON.parse(await file.text()); }
     catch (e) { throw new Error("O arquivo não é um JSON válido."); }
 
     const incoming = Array.isArray(json) ? json : json && Array.isArray(json.notes) ? json.notes : null;
     if (!incoming) throw new Error("Estrutura não reconhecida: não encontrei uma lista de notas.");
+    const backupFiles = json && !Array.isArray(json) && json.files && typeof json.files === "object" ? json.files : {};
 
-    const snapshot = { notes: state.data.notes.slice(), categories: state.data.categories.slice() };
+    snapshot = { notes: state.data.notes.slice(), categories: state.data.categories.slice() };
     if (json && !Array.isArray(json)) {
       normalizeCategories(json.categories).forEach((c) => {
         if (!state.data.categories.some((x) => x.id === c.id)) state.data.categories.push(c);
@@ -622,7 +871,8 @@ async function importBackup(file) {
     }
 
     const usedIds = new Set(state.data.notes.map((n) => n.id));
-    let imported = 0, skipped = 0, invalid = 0;
+    const pending = []; // arquivos das notas novas: { id, blob }
+    let imported = 0, skipped = 0, invalid = 0, lostFiles = 0;
     incoming.forEach((raw) => {
       const note = normalizeNote(raw, state.data.categories);
       if (!note) { invalid++; return; }
@@ -630,24 +880,47 @@ async function importBackup(file) {
       if (existing && existing.updated === note.updated && existing.content === note.content && existing.title === note.title) { skipped++; return; }
       if (usedIds.has(note.id)) note.id = uid();
       usedIds.add(note.id);
+
+      // Cada nota importada recebe cópias próprias dos arquivos, com ids novos (nada é compartilhado por acidente).
+      const idMap = new Map();
+      noteFileIds(note).forEach((oldId) => {
+        const entry = Object.prototype.hasOwnProperty.call(backupFiles, oldId) ? backupFiles[oldId] : null;
+        const blob = decodeBackupFile(entry);
+        if (!blob) { lostFiles++; return; }
+        const newId = uid();
+        idMap.set(oldId, newId);
+        pending.push({ id: newId, blob });
+      });
+      note.content = note.content.replace(FILE_ID_ATTR, (m, id) => (idMap.has(id) ? `data-file="${idMap.get(id)}"` : m));
+      note.attachments = note.attachments.filter((a) => idMap.has(a.id)).map((a) => ({ ...a, id: idMap.get(a.id) }));
+
       state.data.notes.push(note);
       imported++;
     });
 
     if (!imported && !skipped) throw new Error("Nenhuma nota válida foi encontrada no arquivo.");
 
-    if (imported && !(await saveData())) {
-      state.data.notes = snapshot.notes;
-      state.data.categories = snapshot.categories;
-      throw new Error("Sem espaço no navegador para importar. Nada foi alterado.");
+    if (imported) {
+      if (pending.length) {
+        try { await Files.open(); }
+        catch (e) { throw new Error("Este navegador não permite guardar os anexos do backup. Nada foi alterado."); }
+        try {
+          for (const p of pending) { await Files.put(p.id, p.blob, p.blob.type); created.push(p.id); }
+        } catch (e) { throw new Error("Sem espaço no navegador para os anexos do backup. Nada foi alterado."); }
+      }
+      if (!(await saveData())) throw new Error("Sem espaço no navegador para importar. Nada foi alterado.");
     }
     fillCategorySelects();
     renderAll();
+    housekeeping();
     const parts = [`${imported} ${imported === 1 ? "nota importada" : "notas importadas"}`];
     if (skipped) parts.push(`${skipped} já existiam`);
     if (invalid) parts.push(`${invalid} inválidas ignoradas`);
-    toast(parts.join(", ") + ".");
+    if (lostFiles) parts.push(`${lostFiles} ${lostFiles === 1 ? "anexo ausente no backup" : "anexos ausentes no backup"}`);
+    toast(parts.join(", ") + ".", lostFiles ? { duration: 8000 } : {});
   } catch (e) {
+    if (snapshot) { state.data.notes = snapshot.notes; state.data.categories = snapshot.categories; fillCategorySelects(); }
+    if (created.length) Files.remove(created).catch(() => {});
     toast(e.message || "Não foi possível importar o arquivo.", { tone: "error", duration: 7000 });
   }
 }
@@ -689,7 +962,7 @@ function addCategory(name) {
 }
 
 function isEmptyNote(n) {
-  return !n.title.trim() && !plainText(n.content) && !/<img/i.test(n.content) && !n.tags.length;
+  return !n.title.trim() && !plainText(n.content) && !/<img/i.test(n.content) && !n.tags.length && !n.attachments.length;
 }
 
 function createNote() {
@@ -697,7 +970,7 @@ function createNote() {
   const note = {
     id: uid(), title: "", content: "",
     category: state.ui.category !== "all" ? state.ui.category : defaultCategoryId(),
-    tags: [], color: "none", favorite: false, pinned: false, created: now, updated: now, deletedAt: null
+    tags: [], attachments: [], color: "none", favorite: false, pinned: false, created: now, updated: now, deletedAt: null
   };
   state.data.notes.unshift(note);
   return note;
@@ -747,6 +1020,7 @@ async function deleteForever(id) {
   textCache.delete(id); searchCache.delete(id);
   if (state.ui.activeId === id) leaveNote();
   commit();
+  releaseFiles(noteFileIds(note));
   toast("Nota excluída permanentemente.");
 }
 
@@ -759,9 +1033,11 @@ async function emptyTrash() {
     confirmText: "Esvaziar", danger: true
   });
   if (!ok) return;
+  const removed = trashedNotes();
   state.data.notes = state.data.notes.filter((n) => !n.deletedAt);
   if (activeNote() === null) leaveNote();
   commit();
+  releaseFiles(removed.flatMap((n) => [...noteFileIds(n)]));
   toast("Lixeira esvaziada.");
 }
 
@@ -898,10 +1174,10 @@ function noteText(n) {
 }
 /** Texto pesquisável: título, conteúdo, categoria e tags (sem acentos e em minúsculas). */
 function searchIndex(n) {
-  const stamp = `${n.updated}|${n.title}|${n.category}|${n.tags.join(",")}|${categoryName(n.category)}|${n.content.length}`;
+  const stamp = `${n.updated}|${n.title}|${n.category}|${n.tags.join(",")}|${categoryName(n.category)}|${n.content.length}|${n.attachments.length}`;
   let entry = searchCache.get(n.id);
   if (!entry || entry.stamp !== stamp) {
-    const hay = norm([n.title, noteText(n), categoryName(n.category), n.tags.map((t) => "#" + t).join(" ")].join(" "));
+    const hay = norm([n.title, noteText(n), categoryName(n.category), n.tags.map((t) => "#" + t).join(" "), n.attachments.map((a) => a.name).join(" ")].join(" "));
     entry = { stamp, hay };
     searchCache.set(n.id, entry);
   }
@@ -1009,7 +1285,8 @@ function buildCard(n) {
         n.pinned ? icon("pin", "mark-pin") : null,
         n.favorite ? icon("star", "mark-star") : null),
       h("span", { class: "card-preview", text: preview }),
-      h("span", { class: "card-meta" }, h("span", { class: "badge", text: categoryName(n.category) }), ...tags),
+      h("span", { class: "card-meta" }, h("span", { class: "badge", text: categoryName(n.category) }), ...tags,
+        n.attachments.length ? h("span", { class: "tag attach-tag", title: `${n.attachments.length} ${n.attachments.length === 1 ? "anexo" : "anexos"}` }, icon("clip"), String(n.attachments.length)) : null),
       h("span", { class: "card-date", text: n.deletedAt ? `Excluída ${formatRelative(n.deletedAt)}` : formatRelative(n.updated) })
     ));
 }
@@ -1139,6 +1416,8 @@ function renderTrashView(note) {
   );
   els.trashContent.innerHTML = sanitizeHtml(note.content);
   els.trashContent.querySelectorAll("a").forEach((a) => { a.target = "_blank"; a.rel = "noopener noreferrer"; });
+  hydrateImages(els.trashContent);
+  renderAttachmentList(note, els.trashAttachList, els.trashAttachments, { editable: false });
   setColorAttr(els.viewTrash, note.color);
 }
 
@@ -1153,6 +1432,8 @@ function setColorAttr(el, color) {
 function loadEditor(note) {
   els.noteTitle.value = note.title;
   els.noteContent.innerHTML = sanitizeHtml(note.content);
+  hydrateImages(els.noteContent);
+  renderAttachments(note);
   renderTagEditor(note);
   renderEditorBar(note);
   updateEmptyState();
@@ -1303,7 +1584,8 @@ const COMMANDS = {
   checklist: toggleChecklist,
   link: openLinkDialog,
   code: () => toggleBlock("pre"),
-  image: () => { saveSelection(); els.imageInput.click(); }
+  image: () => { saveSelection(); els.imageInput.click(); },
+  pdf: () => els.pdfInput.click()
 };
 
 function updateToolbarState() {
@@ -1366,7 +1648,34 @@ function removeLink() {
   onFormatted();
 }
 
-/* ---------- Imagens ---------- */
+/* ---------- Imagens e PDFs ---------- */
+
+const isImageFile = (f) => /^image\/(png|jpe?g|gif|webp)$/i.test(f.type);
+const isPdfFile = (f) => f.type === "application/pdf" || (!f.type && /\.pdf$/i.test(f.name));
+const formatSize = (bytes) => (bytes < 1048576 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1048576).toFixed(1).replace(".", ",")} MB`);
+
+async function ensureFilesReady() {
+  try {
+    await Files.open();
+    if (!persistAsked && navigator.storage && navigator.storage.persist) { persistAsked = true; navigator.storage.persist().catch(() => {}); } // pede para o navegador não apagar os anexos sozinho
+    return true;
+  } catch (e) {
+    toast("Este navegador não permite guardar anexos (o armazenamento local está bloqueado).", { tone: "error", duration: 7000 });
+    return false;
+  }
+}
+async function hasRoomFor(bytes) {
+  try {
+    const { usage, quota } = await navigator.storage.estimate();
+    if (quota && usage != null && quota - usage < bytes * 1.5 + 5e6) return false;
+  } catch (e) { /* sem estimativa: deixa tentar */ }
+  return true;
+}
+const NO_ROOM = "Sem espaço no navegador para guardar esse arquivo. Exporte um backup e remova anexos antigos.";
+function toastFileError(e, fallback) {
+  const quota = e && (e.name === "QuotaExceededError" || /quota/i.test(e.message || ""));
+  toast(quota ? NO_ROOM : (e && e.message) || fallback, { tone: "error", duration: 7000 });
+}
 
 function loadImage(file) {
   return new Promise((resolve, reject) => {
@@ -1377,38 +1686,227 @@ function loadImage(file) {
     img.src = url;
   });
 }
-/** Redimensiona e comprime para JPEG. GIFs animados viram imagem estática; transparência vira fundo branco. */
-async function compressImage(file) {
+const canvasToBlob = (canvas, type, quality) => new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+
+/**
+ * Prepara a imagem para guardar: GIFs ficam como estão (mantém a animação); as demais são
+ * reduzidas (lado máximo 1600 px) e recomprimidas em JPEG, exceto quando já são pequenas.
+ * Na conversão para JPEG, transparência vira fundo branco.
+ */
+async function prepareImage(file) {
+  if (file.type === "image/gif") {
+    if (file.size > MAX_IMAGE_BYTES) throw new Error("Esse GIF é grande demais (limite de 8 MB).");
+    return { blob: file, mime: "image/gif" };
+  }
   const img = await loadImage(file);
-  let side = MAX_IMAGE_SIDE, quality = 0.82;
-  for (let i = 0; i < 4; i++) {
-    const scale = Math.min(1, side / Math.max(img.naturalWidth, img.naturalHeight));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
-    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const url = canvas.toDataURL("image/jpeg", quality);
-    if (url.length <= MAX_IMAGE_CHARS) return url;
-    side *= 0.75;
-    quality = Math.max(0.5, quality - 0.1);
-  }
-  throw new Error("A imagem é grande demais, mesmo comprimida. Tente uma menor.");
+  const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+  if (scale === 1 && file.size <= 1.5 * 1048576) return { blob: file, mime: file.type.toLowerCase() };
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  const blob = await canvasToBlob(canvas, "image/jpeg", 0.85);
+  if (!blob) throw new Error("Não foi possível processar essa imagem.");
+  if (scale === 1 && blob.size >= file.size && file.size <= MAX_IMAGE_BYTES) return { blob: file, mime: file.type.toLowerCase() };
+  if (blob.size > MAX_IMAGE_BYTES) throw new Error("A imagem é grande demais, mesmo comprimida. Tente uma menor.");
+  return { blob, mime: "image/jpeg" };
 }
+
 async function insertImageFile(file) {
-  if (!file || !/^image\/(png|jpe?g|gif|webp)$/i.test(file.type)) { toast("Use imagens PNG, JPG, GIF ou WebP.", { tone: "error" }); return; }
+  if (!file || !isImageFile(file)) { toast("Use imagens PNG, JPG, GIF ou WebP.", { tone: "error" }); return; }
+  if (!(await ensureFilesReady())) return;
+  const note = activeNote();
+  if (!note || note.deletedAt || state.ui.view !== "editor") return;
+  let id = null;
   try {
-    const dataUrl = await compressImage(file);
-    if (storageUsedChars() + dataUrl.length > QUOTA_CHARS * 0.95) throw new Error("Sem espaço para mais imagens neste navegador. Exporte um backup e remova imagens ou notas antigas.");
+    const { blob, mime } = await prepareImage(file);
+    if (!(await hasRoomFor(blob.size))) throw new Error(NO_ROOM);
+    id = uid();
+    await Files.put(id, blob, mime);
+    if (state.ui.activeId !== note.id || els.viewEditor.hidden) { await Files.remove([id]); return; } // o usuário trocou de nota no meio do caminho
+    const url = URL.createObjectURL(blob);
+    urlCache.set(id, Promise.resolve(url));
     restoreSelection();
-    document.execCommand("insertImage", false, dataUrl);
+    document.execCommand("insertImage", false, url);
+    const img = [...els.noteContent.querySelectorAll("img")].find((el) => el.getAttribute("src") === url && !el.hasAttribute("data-file"));
+    if (!img) throw new Error("Não foi possível inserir a imagem.");
+    img.setAttribute("data-file", id);
+    img.alt = "imagem";
     onFormatted();
-    if (storageUsedChars() > QUOTA_CHARS * 0.8) toast("O armazenamento está quase cheio. Veja Configurações → Dados.", { tone: "error", duration: 7000 });
+    saveSelection(); // a próxima imagem entra depois desta
   } catch (e) {
-    toast(e.message || "Não foi possível inserir a imagem.", { tone: "error", duration: 7000 });
+    if (id) { revokeUrl(id); Files.remove([id]).catch(() => {}); }
+    toastFileError(e, "Não foi possível inserir a imagem.");
   }
+}
+async function insertImages(files) { for (const f of files) await insertImageFile(f); }
+
+/** Troca <img data-file> (sem src) pela imagem guardada. Mostra um aviso se o arquivo não existir mais. */
+async function hydrateImages(root) {
+  const imgs = [...root.querySelectorAll("img[data-file]")].filter((img) => !img.getAttribute("src"));
+  await Promise.all(imgs.map(async (img) => {
+    let url = null;
+    try { url = await fileUrl(img.getAttribute("data-file")); } catch (e) { /* tratado como ausente */ }
+    if (url) img.src = url;
+    else { img.classList.add("img-missing"); img.alt = "Imagem indisponível neste navegador"; }
+  }));
+}
+
+/* ---------- Anexos em PDF ---------- */
+
+async function looksLikePdf(file) {
+  return hasPdfHeader(new Uint8Array(await file.slice(0, 1024).arrayBuffer()));
+}
+
+async function attachPdfs(files) {
+  const note = activeNote();
+  if (!note || note.deletedAt || state.ui.view !== "editor") return;
+  if (!(await ensureFilesReady())) return;
+  let added = 0;
+  for (const file of files) {
+    if (note.attachments.length >= MAX_ATTACHMENTS) { toast(`Cada nota aceita até ${MAX_ATTACHMENTS} anexos.`, { tone: "error" }); break; }
+    let id = null;
+    try {
+      if (file.size > MAX_PDF_BYTES) throw new Error(`“${file.name}” passa do limite de ${MAX_PDF_BYTES / 1048576} MB.`);
+      if (!(await looksLikePdf(file))) throw new Error(`“${file.name}” não parece ser um PDF válido.`);
+      if (!(await hasRoomFor(file.size))) throw new Error(NO_ROOM);
+      id = uid();
+      await Files.put(id, file, "application/pdf");
+      if (!getNote(note.id)) { await Files.remove([id]); return; } // a nota foi apagada durante o envio
+      note.attachments.push({ id, name: cleanFileName(file.name), type: "application/pdf", size: file.size, added: Date.now() });
+      added++;
+    } catch (e) {
+      if (id) Files.remove([id]).catch(() => {});
+      toastFileError(e, "Não foi possível anexar o PDF.");
+    }
+  }
+  if (!added) return;
+  note.updated = Date.now();
+  if (state.ui.activeId === note.id) renderAttachments(note);
+  await commit();
+  toast(added === 1 ? "PDF anexado." : `${added} PDFs anexados.`, { duration: 2500 });
+}
+
+function renderAttachments(note) {
+  renderAttachmentList(note, els.attachList, els.attachments, { editable: true });
+}
+function renderAttachmentList(note, list, section, { editable }) {
+  section.hidden = !note.attachments.length;
+  list.replaceChildren(...note.attachments.map((a) =>
+    h("li", { class: "attach-item" },
+      icon("file", "attach-icon"),
+      h("div", { class: "attach-info" },
+        h("span", { class: "attach-name", text: a.name, title: a.name }),
+        h("span", { class: "attach-meta", text: `PDF · ${formatSize(a.size)}` })),
+      h("div", { class: "attach-actions" },
+        h("button", { class: "btn btn-small", type: "button", text: "Abrir", "aria-label": `Abrir ${a.name}`, onClick: () => openPdf(a) }),
+        h("button", { class: "btn btn-small", type: "button", text: "Baixar", "aria-label": `Baixar ${a.name}`, onClick: () => downloadAttachment(a) }),
+        editable ? h("button", { class: "btn btn-small btn-danger-outline", type: "button", text: "Remover", "aria-label": `Remover ${a.name}`, onClick: () => removeAttachment(note, a) }) : null))
+  ));
+}
+
+async function openPdf(a) {
+  try {
+    const url = await fileUrl(a.id);
+    if (!url) throw new Error("O arquivo não foi encontrado neste navegador.");
+    els.pdfTitle.textContent = a.name;
+    els.pdfOpenTab.href = url;
+    els.pdfFrame.src = url;
+    els.pdfDialog.showModal();
+  } catch (e) { toast(e.message || "Não foi possível abrir o PDF.", { tone: "error" }); }
+}
+
+async function downloadAttachment(a) {
+  try {
+    const blob = await Files.get(a.id);
+    if (!blob) throw new Error("O arquivo não foi encontrado neste navegador.");
+    downloadFile(/\.pdf$/i.test(a.name) ? a.name : a.name + ".pdf", blob, "application/pdf");
+  } catch (e) { toast(e.message || "Não foi possível baixar o PDF.", { tone: "error" }); }
+}
+
+async function removeAttachment(note, a) {
+  const ok = await confirmAction({
+    title: "Remover anexo?",
+    message: `“${a.name}” será removido desta nota. Não dá para desfazer.`,
+    confirmText: "Remover", danger: true
+  });
+  if (!ok || !getNote(note.id)) return;
+  note.attachments = note.attachments.filter((x) => x.id !== a.id);
+  note.updated = Date.now();
+  if (state.ui.activeId === note.id) renderAttachments(note);
+  await commit();
+  releaseFiles([a.id]);
+  toast("Anexo removido.");
+}
+
+/** Apaga do IndexedDB os arquivos que nenhuma nota usa mais. */
+async function releaseFiles(ids) {
+  if (!state.data) return;
+  captureIfDirty(); // conta também o que está sendo digitado agora (imagem colada de outra nota, por exemplo)
+  const still = referencedFileIds(state.data.notes);
+  const gone = [...ids].filter((id) => !still.has(id));
+  if (!gone.length) return;
+  gone.forEach(revokeUrl);
+  try { await Files.remove(gone); } catch (e) { console.error(e); }
+}
+
+/* ---------- Manutenção: migrar imagens antigas e limpar arquivos órfãos ---------- */
+
+/** Notas antigas guardavam imagens em base64 dentro do texto. Move-as para o IndexedDB e libera o localStorage. */
+async function migrateInlineImages() {
+  if (!state.data) return;
+  let changed = false;
+  for (const note of state.data.notes) {
+    if (!/<img[^>]+src="data:image/i.test(note.content)) continue;
+    const original = note.content;
+    const doc = new DOMParser().parseFromString(original, "text/html");
+    const made = [];
+    try {
+      for (const img of doc.body.querySelectorAll("img")) {
+        const src = img.getAttribute("src") || "";
+        const m = SAFE_IMG.exec(src);
+        if (!m) continue;
+        const type = m[1].toLowerCase();
+        const mime = "image/" + (type === "jpg" ? "jpeg" : type);
+        const id = uid();
+        await Files.put(id, new Blob([Vault.unb64(src.slice(src.indexOf(",") + 1))], { type: mime }), mime);
+        made.push(id);
+        img.removeAttribute("src");
+        img.setAttribute("data-file", id);
+      }
+      if (!made.length) continue;
+      if (!state.data || note.content !== original || state.ui.activeId === note.id) { await Files.remove(made); continue; } // nota em uso: tenta na próxima vez
+      note.content = sanitizeHtml(doc.body.innerHTML);
+      changed = true;
+    } catch (e) {
+      console.error(e);
+      if (made.length) await Files.remove(made).catch(() => {});
+    }
+  }
+  if (changed && state.data) await saveData();
+}
+
+/** Remove arquivos que nenhuma nota referencia (e que já têm algumas horas, para não pegar um envio em andamento). */
+async function gcFiles() {
+  if (!state.data) return;
+  const used = referencedFileIds(state.data.notes);
+  const now = Date.now();
+  const stale = (await Files.list()).filter((m) => !used.has(m.id) && now - m.t > GC_MIN_AGE_MS).map((m) => m.id);
+  if (!stale.length || !state.data) return;
+  stale.forEach(revokeUrl);
+  await Files.remove(stale);
+}
+
+async function housekeeping() {
+  if (!state.data || store.get(KEYS.data + ":corrupt") !== null) return; // com dados corrompidos, não mexe em nada
+  try { await Files.open(); } catch (e) { return; }
+  try {
+    await migrateInlineImages();
+    await gcFiles();
+  } catch (e) { console.error(e); }
 }
 
 /* ============================================================
@@ -1427,12 +1925,21 @@ function toggleTheme() {
   applyTheme();
 }
 
-function updateStorageMeter() {
+async function updateStorageMeter() {
   const used = storageUsedChars();
   const pct = Math.min(100, Math.round((used / QUOTA_CHARS) * 100));
   els.meterFill.style.width = pct + "%";
   els.meterFill.dataset.level = pct >= 90 ? "high" : pct >= 70 ? "mid" : "low";
-  els.meterText.textContent = `Espaço usado: cerca de ${(used / 1e6).toFixed(1).replace(".", ",")} MB de aproximadamente 5 MB (${pct}%).`;
+  els.meterText.textContent = `Texto das notas: cerca de ${(used / 1e6).toFixed(1).replace(".", ",")} MB de aproximadamente 5 MB (${pct}%).`;
+  try {
+    const list = await Files.list();
+    const bytes = list.reduce((sum, m) => sum + (m.size || 0), 0);
+    els.meterFiles.textContent = list.length
+      ? `Anexos (imagens e PDFs): ${list.length} ${list.length === 1 ? "arquivo" : "arquivos"}, ${formatSize(bytes)}. Ficam num espaço separado, bem maior que o do texto.`
+      : "Nenhum anexo guardado ainda.";
+  } catch (e) {
+    els.meterFiles.textContent = "Anexos indisponíveis neste navegador.";
+  }
 }
 
 function refreshSecurityUI() {
@@ -1485,8 +1992,9 @@ async function onPinSubmit(event) {
     } else {
       if (!PIN_RE.test(els.pinNew.value)) return fail("Use de 4 a 8 números.");
       if (els.pinNew.value !== els.pinConfirm.value) return fail("Os PINs não são iguais.");
-      await (pinMode === "enable" ? enablePin(els.pinNew.value) : changePin(els.pinNew.value));
-      toast(pinMode === "enable" ? "PIN ativado. Suas notas agora estão criptografadas." : "PIN alterado.");
+      const result = await (pinMode === "enable" ? enablePin(els.pinNew.value) : changePin(els.pinNew.value));
+      if (pinMode === "enable" && result === false) toast("PIN ativado, mas alguns anexos não puderam ser criptografados. Desative e ative o PIN de novo para tentar outra vez.", { tone: "error", duration: 9000 });
+      else toast(pinMode === "enable" ? "PIN ativado. Suas notas e anexos agora estão criptografados." : "PIN alterado.");
     }
     els.pinDialog.close();
     refreshSecurityUI();
@@ -1500,7 +2008,7 @@ async function changePin(pin) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const key = await Vault.deriveKey(pin, salt);
   const previous = { ...state.security };
-  state.security = { enabled: true, key, salt };
+  state.security = { enabled: true, key, salt, fileKey: previous.fileKey }; // a chave dos arquivos não muda
   if (!(await saveData())) { state.security = previous; throw new Error("Não foi possível salvar o novo PIN."); }
 }
 
@@ -1593,19 +2101,27 @@ function bindEvents() {
     const data = e.clipboardData;
     if (!data) return;
     const images = [...data.files].filter((f) => f.type.startsWith("image/"));
+    const pdfs = [...data.files].filter(isPdfFile);
     e.preventDefault();
-    if (images.length) { saveSelection(); images.forEach(insertImageFile); return; }
+    if (images.length || pdfs.length) {
+      saveSelection();
+      insertImages(images).then(() => (pdfs.length ? attachPdfs(pdfs) : null));
+      return;
+    }
     const html = data.getData("text/html");
-    if (html) document.execCommand("insertHTML", false, sanitizeHtml(html));
+    if (html) { document.execCommand("insertHTML", false, sanitizeHtml(html)); hydrateImages(els.noteContent); } // imagem copiada de dentro do app
     else document.execCommand("insertText", false, data.getData("text/plain"));
   });
   els.noteContent.addEventListener("dragover", (e) => { if ([...(e.dataTransfer?.types || [])].includes("Files")) e.preventDefault(); });
   els.noteContent.addEventListener("drop", async (e) => {
-    const images = [...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith("image/"));
-    if (!images.length) return;
+    const dropped = [...(e.dataTransfer?.files || [])];
+    const images = dropped.filter((f) => f.type.startsWith("image/"));
+    const pdfs = dropped.filter(isPdfFile);
+    if (!images.length && !pdfs.length) return;
     e.preventDefault();
     saveSelection();
-    for (const file of images) await insertImageFile(file);
+    await insertImages(images);
+    if (pdfs.length) await attachPdfs(pdfs);
   });
 
   /* --- barra de formatação --- */
@@ -1618,8 +2134,14 @@ function bindEvents() {
   els.imageInput.addEventListener("change", async () => {
     const files = [...els.imageInput.files];
     els.imageInput.value = "";
-    for (const file of files) await insertImageFile(file);
+    await insertImages(files);
   });
+  els.pdfInput.addEventListener("change", async () => {
+    const files = [...els.pdfInput.files];
+    els.pdfInput.value = "";
+    await attachPdfs(files);
+  });
+  els.pdfDialog.addEventListener("close", () => { els.pdfFrame.src = "about:blank"; els.pdfOpenTab.removeAttribute("href"); });
   els.linkForm.addEventListener("submit", applyLink);
   els.linkRemove.addEventListener("click", removeLink);
 
@@ -1707,6 +2229,7 @@ function startApp() {
   showView("dashboard");
   setPane("list");
   renderAll();
+  housekeeping();
 }
 
 function boot() {
